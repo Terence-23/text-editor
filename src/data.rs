@@ -1,6 +1,46 @@
-use std::{cmp::min, path::PathBuf, sync::Arc};
+use std::{
+    fs::File,
+    io::{self, stdout, BufWriter, Write},
+    iter,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
+use crossterm::{cursor::Show, execute};
 use parking_lot::RwLock;
+use std::time::Instant;
+
+use crate::cmdline::Config;
+
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub text: String,
+    pub timeout: Duration,
+    pub time: Instant,
+}
+impl Message {
+    fn new(text: String) -> Self {
+        Self {
+            text,
+            time: Instant::now(),
+            timeout: Duration::from_secs(5),
+        }
+    }
+    pub fn with_timeout(text: String, timeout: Duration) -> Self {
+        Self {
+            text: text,
+            timeout: timeout,
+            time: Instant::now(),
+        }
+    }
+    pub fn show<'a>(&'a self) -> Option<&'a str> {
+        if self.timeout >= self.time.elapsed() {
+            return Some(&self.text);
+        }
+        return None;
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Line {
@@ -38,6 +78,16 @@ impl Line {
         self.char_len = self.data.chars().count();
         Line::from(remainder)
     }
+    /// try to remove a tab from beginning of the line returns the amount of removed characters
+    pub fn back_tab(&mut self, max: usize) -> usize {
+        let mut count = 0;
+        while self.data.chars().next() == Some(' ') && count < max {
+            self.data.remove(0);
+            count += 1;
+        }
+        self.char_len -= count;
+        count
+    }
     pub fn push_str(&mut self, str: &str) {
         let len = str.chars().count();
         self.char_len += len;
@@ -46,6 +96,10 @@ impl Line {
     pub fn insert(&mut self, idx: usize, c: char) {
         self.char_len += 1;
         self.data.insert(idx, c);
+    }
+    pub fn insert_str(&mut self, idx: usize, str: &str) {
+        self.char_len += str.chars().count();
+        self.data.insert_str(idx, str);
     }
     pub fn len(&self) -> usize {
         self.data.len()
@@ -64,6 +118,36 @@ impl Line {
                 + 1,
         )
     }
+    pub fn get_char_span(&self, first: usize, last: usize) -> (usize, usize) {
+        let span = last - first;
+        let first = if first == 0 {
+            0
+        } else {
+            self.data.ceil_char_boundary(
+                self.data
+                    .char_indices()
+                    .take(first)
+                    .last()
+                    .unwrap_or((0, '\0'))
+                    .0
+                    + 1,
+            )
+        };
+        let last = if last == 0 {
+            0
+        } else {
+            self.data.ceil_char_boundary(
+                self.data
+                    .char_indices()
+                    .take(span)
+                    .last()
+                    .unwrap_or((0, '\0'))
+                    .0
+                    + 1,
+            )
+        };
+        (first, last)
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct TextPos(pub usize, pub usize);
@@ -75,16 +159,13 @@ pub struct FileData {
     pub ended: bool,
     pub size: TextPos,
     pub top_visible: usize,
+    pub left_visible: usize,
     pub cursor_location: TextPos,
+    pub message: Message,
 }
 impl Drop for FileData {
     fn drop(&mut self) {
-        dbg!(&self);
-        let start = self.top_visible;
-        let end = min(self.top_visible + self.size.0 + 1, self.lines.len());
-        for l in &self.lines[start..end] {
-            eprintln!("{}", l.data);
-        }
+        execute!(stdout(), Show).unwrap_or(());
     }
 }
 impl FileData {
@@ -98,7 +179,44 @@ impl FileData {
             ended: false,
             size: TextPos(h.into(), w.into()),
             top_visible: 0,
+            left_visible: 0,
+            message: Message::new("Press Ctrl+Q to quit".to_owned()),
         }
+    }
+    pub fn from_path(path: &Path, config: Config) -> Self {
+        let (w, h) = crossterm::terminal::size().unwrap();
+        let tab: String = iter::repeat(' ').take(config.tab_size).collect();
+        let mut lines: Vec<Line> =
+            String::from_utf8(std::fs::read(path).unwrap_or("".bytes().collect()))
+                .unwrap_or("".to_string())
+                .replace('\t', &tab)
+                .lines()
+                .map(|s| Line::from(s))
+                .collect();
+
+        if lines.is_empty() {
+            lines = vec!["".into()]
+        }
+
+        Self {
+            lines,
+            path: PathBuf::from(path),
+            cursor_location: TextPos(0, 0),
+            location: TextPos(0, 0),
+            ended: false,
+            size: TextPos(h.into(), w.into()),
+            top_visible: 0,
+            left_visible: 0,
+            message: Message::new("Press Ctrl+Q to quit".to_owned()),
+        }
+    }
+    pub fn save(&self) -> io::Result<()> {
+        let mut w = BufWriter::new(File::create(self.path.to_owned())?);
+        for l in self.lines.iter() {
+            write!(w, "{}\r\n", l.data)?;
+        }
+        w.flush()?;
+        Ok(())
     }
     #[allow(unused)]
     pub fn get_next_and_prev_chars(&self) -> (usize, usize) {
@@ -126,9 +244,9 @@ pub struct SharedData {
 impl Drop for SharedData {
     fn drop(&mut self) {
         eprintln!("Dropped file data");
+        self.data.write().ended = true;
         if std::thread::panicking() {
             eprintln!("panicking");
-            self.data.write().ended = true;
         }
     }
 }
@@ -138,6 +256,14 @@ impl SharedData {
         Self {
             data: Arc::new(RwLock::new(FileData::new())),
         }
+    }
+    pub fn from_path(path: &Path, config: Config) -> Self {
+        Self {
+            data: Arc::new(RwLock::new(FileData::from_path(path, config))),
+        }
+    }
+    pub fn save(&self) -> io::Result<()> {
+        self.data.read().save()
     }
     pub fn get_next_and_prev_chars(&self) -> (usize, usize) {
         let wdata = self.data.write();

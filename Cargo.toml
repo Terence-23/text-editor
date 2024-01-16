@@ -6,9 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+chrono = "0.4.31"
+clap = { version = "4.4.16", features = ["derive", "string"] }
 crossterm = "0.27.0"
+directories = "5.0.1"
 parking_lot = "0.12.1"
 serde = {version = "1.0.195", features = ["derive"]}
+# time = { version = "0.3.31", features = ["formatting", "local-offset"] }
 tokio = { version = "1.35.1", features = ["full"] }
 toml = "0.8.8"
 
