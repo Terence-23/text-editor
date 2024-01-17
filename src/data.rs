@@ -1,4 +1,5 @@
 use std::{
+    default,
     fs::File,
     io::{self, stdout, BufWriter, Write},
     iter,
@@ -148,9 +149,68 @@ impl Line {
         };
         (first, last)
     }
+    pub fn get_next_and_prev_chars(&self, loc: usize) -> (usize, usize) {
+        (
+            if loc == 0 {
+                loc
+            } else {
+                self.data.floor_char_boundary(loc - 1)
+            },
+            if loc == self.data.len() {
+                loc
+            } else {
+                self.data.ceil_char_boundary(loc + 1)
+            },
+        )
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct TextPos(pub usize, pub usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FileStatus {
+    /// file was not edited
+    #[default]
+    Clean,
+    /// file was edited
+    Edited,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PromptType {
+    #[default]
+    Save,
+    Search,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PromptStatus {
+    #[default]
+    Pending,
+    Cancelled,
+    Success,
+}
+#[derive(Clone, Debug)]
+pub struct Prompt {
+    pub message: Line,
+    pub data: Line,
+    pub p_type: PromptType,
+    pub location: usize,
+    pub cursor: usize,
+    pub status: PromptStatus,
+    pub left_visible: usize,
+}
+impl Prompt {
+    pub fn new(message: &str, p_type: PromptType) -> Prompt {
+        Prompt {
+            message: Line::new(message),
+            data: Line::new(""),
+            p_type: p_type,
+            location: 0,
+            cursor: 0,
+            status: PromptStatus::Pending,
+            left_visible: 0,
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct FileData {
     pub lines: Vec<Line>,
@@ -162,6 +222,9 @@ pub struct FileData {
     pub left_visible: usize,
     pub cursor_location: TextPos,
     pub message: Message,
+    pub f_status: FileStatus,
+    pub prompt: Option<Prompt>,
+    pub redraw: bool,
 }
 impl Drop for FileData {
     fn drop(&mut self) {
@@ -181,6 +244,9 @@ impl FileData {
             top_visible: 0,
             left_visible: 0,
             message: Message::new("Press Ctrl+Q to quit".to_owned()),
+            f_status: FileStatus::Clean,
+            prompt: None,
+            redraw: true,
         }
     }
     pub fn from_path(path: &Path, config: Config) -> Self {
@@ -208,6 +274,9 @@ impl FileData {
             top_visible: 0,
             left_visible: 0,
             message: Message::new("Press Ctrl+Q to quit".to_owned()),
+            f_status: FileStatus::Clean,
+            prompt: None,
+            redraw: true,
         }
     }
     pub fn save(&self) -> io::Result<()> {
@@ -220,19 +289,7 @@ impl FileData {
     }
     #[allow(unused)]
     pub fn get_next_and_prev_chars(&self) -> (usize, usize) {
-        let line_text = &self.lines[self.location.0].data;
-        (
-            if self.location.1 == 0 {
-                self.location.1
-            } else {
-                line_text.floor_char_boundary(self.location.1 - 1)
-            },
-            if self.location.1 == line_text.len() {
-                self.location.1
-            } else {
-                line_text.ceil_char_boundary(self.location.1 + 1)
-            },
-        )
+        self.lines[self.location.0].get_next_and_prev_chars(self.location.1)
     }
 }
 
